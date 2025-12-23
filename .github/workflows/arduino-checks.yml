@@ -27,7 +27,7 @@ jobs:
 
       # Arduino - lint
       - name: Arduino-lint
-        uses: arduino/arduino-lint-action@v1
+        uses: arduino/arduino-lint-action@v2
         with:
           library-manager: update
           verbose: false
@@ -112,3 +112,4 @@ jobs:
             - 'examples/DMXSerialFlow'
             - 'examples/DmxSerialRecv'
             - 'examples/DmxSerialSend'
+
