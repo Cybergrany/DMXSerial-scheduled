@@ -110,6 +110,11 @@ void _DMX_setMode(DMXUARTMode mode)
     (USART1).CTRLC = DMXFORMAT; // send with 2 stop bits for compatibility
     (USART1).STATUS = USART_TXCIF_bm; //  clear transmit complete flag
     (USART1).CTRLA = USART_TXCIE_bm; // enable transmit complete interrupt
+  } else if (mode == DMXUARTMode::TIDLE) {
+    (USART1).BAUD = (int16_t)_DMX_dmxDivider; // assign the baud_divider, a.k.a. BAUD (USART Baud Rate Register)
+    (USART1).CTRLC = DMXFORMAT; // keep transmitter at mark/idle without interrupts
+    (USART1).CTRLB = USART_TXEN_bm;
+    (USART1).CTRLA = 0;
   } // if
 
   // enable interrupts again, restore SREG content

@@ -199,6 +199,11 @@ void _DMX_setMode(DMXUARTMode mode)
     UBRRnL = _DMX_dmxPreScale;
     UCSRnB = ((1 << TXENn) | (1 << TXCIEn));
     UCSRnC = DMXFORMAT; // send with 2 stop bits for compatibility
+  } else if (mode == DMXUARTMode::TIDLE) {
+    UBRRnH = _DMX_dmxPreScale >> 8;
+    UBRRnL = _DMX_dmxPreScale;
+    UCSRnB = (1 << TXENn);
+    UCSRnC = DMXFORMAT; // keep transmitter at mark/idle without interrupts
   } // if
 } // _DMX_setMode()
 
