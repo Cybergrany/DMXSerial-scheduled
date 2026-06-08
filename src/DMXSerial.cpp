@@ -90,6 +90,8 @@ typedef enum {
 
 DMXMode _dmxMode; // Mode of Operation
 int _dmxModePin; // pin used for I/O direction.
+volatile uint8_t *_dmxModePort; // output port for the mode pin.
+uint8_t _dmxModeBitMask; // bit mask for the mode pin.
 
 uint8_t _dmxRecvState; // Current State of receiving DMX Bytes
 int _dmxChannel; // the next channel byte to be sent.
@@ -112,6 +114,19 @@ uint8_t *_dmxDataLastPtr;
 
 // Create a single class instance. Multiple class instances (multiple simultaneous DMX ports) are not supported.
 DMXSerialClass DMXSerial;
+
+
+static inline void _DMXSetDirection(uint8_t direction)
+{
+  uint8_t oldSREG = SREG;
+  cli();
+  if (direction == LOW) {
+    *_dmxModePort &= ~_dmxModeBitMask;
+  } else {
+    *_dmxModePort |= _dmxModeBitMask;
+  }
+  SREG = oldSREG;
+} // _DMXSetDirection()
 
 
 // ----- Class implementation -----
@@ -151,14 +166,16 @@ void DMXSerialClass::init(int mode, int dmxModePin)
     // Setup external mode signal
     _DMX_init();
 
+    _dmxModePort = portOutputRegister(digitalPinToPort(_dmxModePin));
+    _dmxModeBitMask = digitalPinToBitMask(_dmxModePin);
     pinMode(_dmxModePin, OUTPUT); // enables the pin for output to control data direction
-    digitalWrite(_dmxModePin, DmxModeIn); // data in direction, to avoid problems on the DMX line for now.
+    _DMXSetDirection(DmxModeIn); // data in direction, to avoid problems on the DMX line for now.
 
     if ((_dmxMode == DMXController) || (_dmxMode == DMXControllerScheduled)) {
-      digitalWrite(_dmxModePin, DmxModeOut); // data Out direction
       _dmxMaxChannel = 32; // The default in Controller mode is sending 32 channels.
 
       if (_dmxMode == DMXController) {
+        _DMXSetDirection(DmxModeOut); // data Out direction
         _DMXStartSending();
       } else {
         _dmxChannel = -1;
@@ -233,7 +250,7 @@ bool DMXSerialClass::sendFrame()
     return false;
   }
 
-  digitalWrite(_dmxModePin, DmxModeOut);
+  _DMXSetDirection(DmxModeOut);
   _DMXStartSending();
   return true;
 } // sendFrame()
@@ -438,9 +455,8 @@ void _DMXTransmitted()
       // start sending a BREAK and loop forever in ISR
       _DMXStartSending();
     } else if (_dmxMode == DMXControllerScheduled) {
-      // Leave the transmitter enabled at mark/idle but stop interrupts until
-      // the application explicitly requests the next scheduled frame.
       _DMX_setMode(DMXUARTMode::TIDLE);
+      _DMXSetDirection(DmxModeIn);
       _dmxSending = false;
     }
 
