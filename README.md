@@ -15,6 +15,137 @@ There is a full 512 byte buffer allocated to support all possible DMX values of 
 Since Version 1.5.0 the original ATmega168 based implementation was refactored and enhanced
 to support also other processor architectures like the ATMEGA4809.
 
+## Scheduled controller mode
+
+This fork adds `DMXControllerScheduled` for projects that need DMX output to
+share a small microcontroller with another timing-sensitive protocol.
+
+The original `DMXController` mode is unchanged: after `DMXSerial.init(DMXController)`
+the library continuously sends DMX frames in the background. That is the normal
+DMX behaviour and remains the right choice when DMX is the main job of the
+controller.
+
+`DMXControllerScheduled` initializes the same DMX hardware and shadow buffer, but
+it does not continuously restart frames. A frame is transmitted only when the
+application calls `sendFrame()` or `sendFrameBlocking(timeoutMs)`. When that
+frame completes, TX interrupts are stopped and the direction pin is returned to
+receive/tri-state (`DmxModeIn`) until the next explicit frame request.
+
+The purpose is to create predictable idle windows for protocols such as PJON
+`SoftwareBitBang`, where long runs of continuous DMX TX interrupts can otherwise
+delay packet receive/ACK handling.
+
+### Basic one-frame send
+
+```cpp
+#include <DMXSerial.h>
+
+void setup() {
+  DMXSerial.init(DMXControllerScheduled);
+  DMXSerial.maxChannel(32); // Keep frames short when only low fixture channels are used.
+
+  DMXSerial.write(1, 255);
+  DMXSerial.write(2, 128);
+
+  // Start one frame and return immediately. isSending() stays true until the
+  // frame has completed and scheduled mode has released the driver.
+  DMXSerial.sendFrame();
+}
+
+void loop() {
+  if (!DMXSerial.isSending()) {
+    // Safe place for other protocol work.
+  }
+}
+```
+
+### Blocking one-frame send
+
+```cpp
+bool sent = DMXSerial.sendFrameBlocking(10);
+```
+
+`sendFrameBlocking(timeoutMs)` waits until the frame completes or the timeout
+expires. A `false` return means either no frame was started or the wait timed
+out. It does not abort a frame that is already being transmitted; check
+`isSending()` before opening a timing-sensitive receive window.
+
+### Burst plus keepalive pattern
+
+Some fixtures expect a regular DMX signal, so scheduled mode should normally be
+paired with a small burst after changes and a periodic keepalive frame while
+idle. Keep `maxChannel()` as low as your fixture patch allows so each scheduled
+frame is short.
+
+```cpp
+#include <DMXSerial.h>
+
+constexpr uint8_t kBurstFrames = 3;
+constexpr uint16_t kMaxChannels = 32;
+constexpr unsigned long kKeepaliveMs = 250;
+
+uint8_t pendingFrames = 0;
+unsigned long lastFrameAt = 0;
+
+void queueDmxChange(uint16_t channel, uint8_t value) {
+  DMXSerial.write(channel, value);
+  pendingFrames = kBurstFrames;
+}
+
+void setup() {
+  DMXSerial.init(DMXControllerScheduled);
+  DMXSerial.maxChannel(kMaxChannels);
+}
+
+void loop() {
+  const unsigned long now = millis();
+
+  if (DMXSerial.isSending()) {
+    return;
+  }
+
+  if (pendingFrames > 0 || now - lastFrameAt >= kKeepaliveMs) {
+    if (DMXSerial.sendFrame()) {
+      lastFrameAt = now;
+      if (pendingFrames > 0) {
+        --pendingFrames;
+      }
+    }
+    return;
+  }
+
+  // Other protocol receive/service work can run here between DMX frames.
+}
+```
+
+### PJON SoftwareBitBang coexistence
+
+For PJON `SoftwareBitBang`, keep the receive/service work outside active DMX
+frames. Decode incoming PJON packets quickly, update the DMX shadow buffer with
+`DMXSerial.write()`, then return so PJON can ACK before starting another DMX
+frame from the main loop.
+
+```cpp
+void loop() {
+  if (DMXSerial.isSending()) {
+    return;
+  }
+
+  bus.receive(1000); // microsecond-scale receive window, tune for your bus.
+
+  if (pendingDmxCommand) {
+    applyCommandToDmxBuffer();
+    pendingFrames = 3;
+  }
+
+  serviceScheduledDmxFrames();
+}
+```
+
+Scheduled mode is intentionally opt-in. Existing sketches that use
+`DMXController`, `DMXReceiver`, or `DMXProbe` should keep their previous
+behaviour.
+
 
 ## Supported Boards and processors
 
@@ -86,4 +217,3 @@ that use the Serial port for connecting to the DMX bus.
 Copyright (c) 2005-2020 by Matthias Hertel,  http://www.mathertel.de/
 
 The detailed Software License Agreement can be found at: http://www.mathertel.de/License.aspx
-
