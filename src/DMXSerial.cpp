@@ -41,7 +41,8 @@ typedef enum {
   RDATA = 2, // Receive DMX data + Interrupt
   TBREAK = 3, // Transmit DMX Break + Interrupt on Transmission completed
   TDATA = 4, // Transmit DMX Data + Interrupt on Register empty
-  TDONE = 5 // Transmit DMX Data + Interrupt on Transmission completed
+  TDONE = 5, // Transmit DMX Data + Interrupt on Transmission completed
+  TIDLE = 6 // Transmit idle mark with no interrupt
 } __attribute__((packed)) DMXUARTMode;
 
 
@@ -89,12 +90,15 @@ typedef enum {
 
 DMXMode _dmxMode; // Mode of Operation
 int _dmxModePin; // pin used for I/O direction.
+volatile uint8_t *_dmxModePort; // output port for the mode pin.
+uint8_t _dmxModeBitMask; // bit mask for the mode pin.
 
 uint8_t _dmxRecvState; // Current State of receiving DMX Bytes
 int _dmxChannel; // the next channel byte to be sent.
 
 volatile int _dmxMaxChannel = 32; // the last channel used for sending (1..512).
 volatile unsigned long _dmxLastPacket = 0; // the last time (using the millis function) a packet was received.
+volatile bool _dmxSending = false; // true while a scheduled frame is in progress.
 
 bool _dmxUpdated = true; // is set to true when new data arrived.
 
@@ -110,6 +114,19 @@ uint8_t *_dmxDataLastPtr;
 
 // Create a single class instance. Multiple class instances (multiple simultaneous DMX ports) are not supported.
 DMXSerialClass DMXSerial;
+
+
+static inline void _DMXSetDirection(uint8_t direction)
+{
+  uint8_t oldSREG = SREG;
+  cli();
+  if (direction == LOW) {
+    *_dmxModePort &= ~_dmxModeBitMask;
+  } else {
+    *_dmxModePort |= _dmxModeBitMask;
+  }
+  SREG = oldSREG;
+} // _DMXSetDirection()
 
 
 // ----- Class implementation -----
@@ -129,6 +146,7 @@ void DMXSerialClass::init(int mode, int dmxModePin)
   _dmxModePin = dmxModePin;
   _dmxRecvState = STARTUP; // initial state
   _dmxChannel = 0;
+  _dmxSending = false;
   _dmxDataPtr = _dmxData;
   _dmxLastPacket = millis(); // remember current (relative) time in msecs.
 
@@ -143,18 +161,27 @@ void DMXSerialClass::init(int mode, int dmxModePin)
   // now start
   _dmxMode = (DMXMode)mode;
 
-  if ((_dmxMode == DMXController) || (_dmxMode == DMXReceiver) || (_dmxMode == DMXProbe)) {
+  if ((_dmxMode == DMXController) || (_dmxMode == DMXControllerScheduled) || (_dmxMode == DMXReceiver) || (_dmxMode == DMXProbe)) {
     // a valid mode was given
     // Setup external mode signal
     _DMX_init();
 
+    _dmxModePort = portOutputRegister(digitalPinToPort(_dmxModePin));
+    _dmxModeBitMask = digitalPinToBitMask(_dmxModePin);
     pinMode(_dmxModePin, OUTPUT); // enables the pin for output to control data direction
-    digitalWrite(_dmxModePin, DmxModeIn); // data in direction, to avoid problems on the DMX line for now.
+    _DMXSetDirection(DmxModeIn); // data in direction, to avoid problems on the DMX line for now.
 
-    if (_dmxMode == DMXController) {
-      digitalWrite(_dmxModePin, DmxModeOut); // data Out direction
+    if ((_dmxMode == DMXController) || (_dmxMode == DMXControllerScheduled)) {
       _dmxMaxChannel = 32; // The default in Controller mode is sending 32 channels.
-      _DMXStartSending();
+
+      if (_dmxMode == DMXController) {
+        _DMXSetDirection(DmxModeOut); // data Out direction
+        _DMXStartSending();
+      } else {
+        _dmxChannel = -1;
+        _dmxSending = false;
+        _DMX_setMode(DMXUARTMode::TIDLE);
+      }
 
     } else if (_dmxMode == DMXReceiver) {
       // Setup Hardware
@@ -214,6 +241,44 @@ void DMXSerialClass::write(int channel, uint8_t value)
     _dmxDataLastPtr = _dmxData + _dmxMaxChannel;
   } // if
 } // write()
+
+
+// Start sending one scheduled DMX frame.
+bool DMXSerialClass::sendFrame()
+{
+  if ((_dmxMode != DMXControllerScheduled) || _dmxSending) {
+    return false;
+  }
+
+  _DMXSetDirection(DmxModeOut);
+  _DMXStartSending();
+  return true;
+} // sendFrame()
+
+
+// Start one scheduled DMX frame and wait for completion.
+bool DMXSerialClass::sendFrameBlocking(uint16_t timeout)
+{
+  if (!sendFrame()) {
+    return false;
+  }
+
+  const unsigned long start = millis();
+  while (isSending()) {
+    if ((millis() - start) >= timeout) {
+      return false;
+    }
+    yield();
+  }
+  return true;
+} // sendFrameBlocking(timeout)
+
+
+// Return true while a frame is being transmitted.
+bool DMXSerialClass::isSending()
+{
+  return (_dmxMode == DMXController) || ((_dmxMode == DMXControllerScheduled) && _dmxSending);
+} // isSending()
 
 
 // Return the DMX buffer for un-save direct but faster access
@@ -284,6 +349,7 @@ bool DMXSerialClass::receive(uint8_t wait)
 void DMXSerialClass::term(void)
 {
   // Disable all USART Features, including Interrupts
+  _dmxSending = false;
   _DMX_setMode(DMXUARTMode::OFF);
 } // term()
 
@@ -296,6 +362,8 @@ void _DMXStartSending()
 {
   // Start sending a BREAK and send more bytes in UDRE ISR
   // Enable transmitter and interrupt
+  _dmxChannel = 0;
+  _dmxSending = true;
   _DMX_setMode(DMXUARTMode::TBREAK);
   _DMX_writeByte((uint8_t)0);
 } // _DMXStartSending()
@@ -381,12 +449,16 @@ void _DMXReceived(uint8_t data, uint8_t frameerror)
 // In DMXReceiver mode this interrupt is disabled and will not occur.
 void _DMXTransmitted()
 {
-  if ((_dmxMode == DMXController) && (_dmxChannel == -1)) {
-    // this occurs after the stop bits of the last data byte
-    // start sending a BREAK and loop forever in ISR
-    _DMX_setMode(DMXUARTMode::TBREAK);
-    _DMX_writeByte((uint8_t)0);
-    _dmxChannel = 0; // next time send start byte
+  if (_dmxChannel == -1) {
+    if (_dmxMode == DMXController) {
+      // this occurs after the stop bits of the last data byte
+      // start sending a BREAK and loop forever in ISR
+      _DMXStartSending();
+    } else if (_dmxMode == DMXControllerScheduled) {
+      _DMX_setMode(DMXUARTMode::TIDLE);
+      _DMXSetDirection(DmxModeIn);
+      _dmxSending = false;
+    }
 
   } else if (_dmxChannel == 0) {
     // this occurs after the stop bits of the break byte

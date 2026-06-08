@@ -57,7 +57,8 @@ typedef enum {
   DMXNone, // unspecified
   DMXController , // always sending
   DMXReceiver,   // always listening
-  DMXProbe       // send and receive upon request
+  DMXProbe,      // send and receive upon request
+  DMXControllerScheduled // send one frame only when explicitly requested
 } DMXMode;
 
 
@@ -119,6 +120,25 @@ class DMXSerialClass
      * @return void
      */
     void    write      (int channel, uint8_t value);
+
+    /**
+     * @brief Start transmitting one DMX frame in DMXControllerScheduled mode.
+     * @return true when a frame was started, false when not in scheduled mode or already sending.
+     */
+    bool    sendFrame();
+
+    /**
+     * @brief Transmit one DMX frame and wait for completion.
+     * @param timeout Milliseconds to wait for the frame to complete.
+     * @return true when the frame completed within the timeout.
+     */
+    bool    sendFrameBlocking(uint16_t timeout);
+
+    /**
+     * @brief Check whether a DMX frame is currently being transmitted.
+     * @return true while continuous controller mode is active or a scheduled frame is in progress.
+     */
+    bool    isSending();
 
     /**
      * @brief Get a pointer to DMX Buffer.
