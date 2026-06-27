@@ -28,12 +28,14 @@ controller.
 `DMXControllerScheduled` initializes the same DMX hardware and shadow buffer, but
 it does not continuously restart frames. A frame is transmitted only when the
 application calls `sendFrame()` or `sendFrameBlocking(timeoutMs)`. When that
-frame completes, TX interrupts are stopped and the direction pin is returned to
-receive/tri-state (`DmxModeIn`) until the next explicit frame request.
+frame completes, TX interrupts are stopped while the direction pin remains in
+transmit mode. The UART holds the DMX line at mark/idle until the next explicit
+frame request, preventing an un-biased RS485 bus from floating between frames.
 
 The purpose is to create predictable idle windows for protocols such as PJON
 `SoftwareBitBang`, where long runs of continuous DMX TX interrupts can otherwise
-delay packet receive/ACK handling.
+delay packet receive/ACK handling. PJON must use a separate pin or physical
+interface because scheduled mode remains the active transmitter on the DMX bus.
 
 ### Basic one-frame send
 
@@ -48,7 +50,7 @@ void setup() {
   DMXSerial.write(2, 128);
 
   // Start one frame and return immediately. isSending() stays true until the
-  // frame has completed and scheduled mode has released the driver.
+  // frame has completed and scheduled mode has stopped TX interrupts.
   DMXSerial.sendFrame();
 }
 

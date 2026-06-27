@@ -180,7 +180,10 @@ void DMXSerialClass::init(int mode, int dmxModePin)
       } else {
         _dmxChannel = -1;
         _dmxSending = false;
+        // Establish mark/idle before enabling the RS485 driver. Scheduled mode
+        // stops UART interrupts between frames but remains the DMX controller.
         _DMX_setMode(DMXUARTMode::TIDLE);
+        _DMXSetDirection(DmxModeOut);
       }
 
     } else if (_dmxMode == DMXReceiver) {
@@ -456,7 +459,6 @@ void _DMXTransmitted()
       _DMXStartSending();
     } else if (_dmxMode == DMXControllerScheduled) {
       _DMX_setMode(DMXUARTMode::TIDLE);
-      _DMXSetDirection(DmxModeIn);
       _dmxSending = false;
     }
 
